@@ -3,13 +3,28 @@ const state = {
   filtered: [],
 };
 
+const CSV_FIELDS = [
+  "code",
+  "upc",
+  "name",
+  "year",
+  "series",
+  "approx_retail_usd",
+  "description",
+  "page_url",
+];
+
 const els = {
+  downloadCatalogBtn: document.getElementById("downloadCatalogBtn"),
   collectionCount: document.getElementById("collectionCount"),
   searchInput: document.getElementById("searchInput"),
   seriesFilter: document.getElementById("seriesFilter"),
-  featuredGrid: document.getElementById("featuredGrid"),
   galleryGrid: document.getElementById("galleryGrid"),
   resultsCount: document.getElementById("resultsCount"),
+  highlightLightbox: document.getElementById("highlightLightbox"),
+  highlightLightboxImage: document.getElementById("highlightLightboxImage"),
+  highlightLightboxCaption: document.getElementById("highlightLightboxCaption"),
+  closeHighlightBtn: document.getElementById("closeHighlightBtn"),
   detailModal: document.getElementById("detailModal"),
   closeModalBtn: document.getElementById("closeModalBtn"),
   modalTitle: document.getElementById("modalTitle"),
@@ -18,17 +33,30 @@ const els = {
   modalDetails: document.getElementById("modalDetails"),
 };
 
-function currency(value) {
-  if (typeof value !== "number" || Number.isNaN(value)) return "N/A";
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
+function ornamentIdFromHash() {
+  const raw = location.hash.replace(/^#/, "");
+  if (!raw) return "";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
-function rarityForValue(value) {
-  if (typeof value !== "number" || Number.isNaN(value)) return "Unknown";
-  if (value >= 50) return "Museum";
-  if (value >= 30) return "Rare";
-  if (value >= 15) return "Notable";
-  return "Classic";
+function pageUrlFor(id) {
+  return `${location.origin}${location.pathname}#${id}`;
+}
+
+function setOrnamentHash(id) {
+  const next = id ? `#${id}` : "";
+  if ((location.hash || "") === next) return;
+  const y = window.scrollY;
+  if (id) {
+    location.hash = id;
+  } else {
+    history.pushState(null, "", `${location.pathname}${location.search}`);
+  }
+  window.scrollTo(0, y);
 }
 
 function buildSeriesOptions(ornaments) {
@@ -64,49 +92,13 @@ function ornamentMatches(ornament, query, series) {
   return haystack.includes(q);
 }
 
-function renderFeatured(ornaments) {
-  const top = ornaments
-    .filter((o) => typeof o.approx_retail_usd === "number")
-    .sort((a, b) => b.approx_retail_usd - a.approx_retail_usd)
-    .slice(0, 10);
-
-  els.featuredGrid.innerHTML = "";
-  if (!top.length) {
-    const p = document.createElement("p");
-    p.className = "text-slate-500 text-sm";
-    p.textContent = "No approx_retail_usd values found in current data.";
-    els.featuredGrid.appendChild(p);
-    return;
-  }
-
-  for (const item of top) {
-    const card = document.createElement("button");
-    card.className =
-      "text-left rounded-xl border border-slate-200 p-3 hover:shadow-md transition bg-white";
-    card.innerHTML = `
-      <div class="aspect-square rounded-lg overflow-hidden bg-slate-100 mb-3">
-        <img src="./${item.image_path || ""}" alt="${item.name}" class="w-full h-full object-cover" />
-      </div>
-      <p class="text-xs uppercase tracking-wide text-slate-500">${item.code || "No code"}</p>
-      <h4 class="font-medium text-sm line-clamp-2 min-h-[2.5rem]">${item.name}</h4>
-      <div class="mt-2 flex items-center justify-between">
-        <span class="text-sm font-semibold">${currency(item.approx_retail_usd)}</span>
-        <span class="text-[11px] px-2 py-1 rounded-full bg-slate-900 text-white">${rarityForValue(
-          item.approx_retail_usd
-        )}</span>
-      </div>
-    `;
-    card.addEventListener("click", () => openModal(item));
-    els.featuredGrid.appendChild(card);
-  }
-}
-
 function renderGallery(ornaments) {
   els.galleryGrid.innerHTML = "";
   els.resultsCount.textContent = `${ornaments.length} ornaments`;
 
   for (const item of ornaments) {
     const card = document.createElement("button");
+    card.type = "button";
     card.className =
       "group text-left rounded-xl border border-slate-200 overflow-hidden bg-white hover:shadow-lg hover:-translate-y-0.5 transition";
     card.innerHTML = `
@@ -134,7 +126,7 @@ function renderGallery(ornaments) {
   }
 }
 
-function openModal(item) {
+function openModal(item, { updateHash = true } = {}) {
   els.modalTitle.textContent = item.name;
   els.modalImage.src = `./${item.image_path || ""}`;
   els.modalImage.alt = item.name;
@@ -169,12 +161,26 @@ function openModal(item) {
   els.detailModal.classList.remove("hidden");
   els.detailModal.classList.add("flex");
   els.detailModal.setAttribute("aria-hidden", "false");
+
+  if (updateHash) setOrnamentHash(item.id);
 }
 
-function closeModal() {
+function closeModal({ updateHash = true } = {}) {
   els.detailModal.classList.add("hidden");
   els.detailModal.classList.remove("flex");
   els.detailModal.setAttribute("aria-hidden", "true");
+  if (updateHash) setOrnamentHash("");
+}
+
+function syncModalToHash() {
+  if (!state.ornaments.length) return;
+  const id = ornamentIdFromHash();
+  if (!id) {
+    closeModal({ updateHash: false });
+    return;
+  }
+  const item = state.ornaments.find((o) => o.id === id);
+  if (item) openModal(item, { updateHash: false });
 }
 
 function applyFilters() {
@@ -182,6 +188,66 @@ function applyFilters() {
   const series = els.seriesFilter.value || "";
   state.filtered = state.ornaments.filter((o) => ornamentMatches(o, query, series));
   renderGallery(state.filtered);
+}
+
+function csvEscape(value) {
+  const text = value == null ? "" : String(value);
+  if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
+}
+
+function downloadCatalog() {
+  const lines = [CSV_FIELDS.join(",")];
+  for (const item of state.ornaments) {
+    const row = {
+      code: item.code,
+      upc: item.upc,
+      name: item.name,
+      year: item.year,
+      series: item.series,
+      approx_retail_usd: item.approx_retail_usd ?? "",
+      description: item.description,
+      page_url: pageUrlFor(item.id),
+    };
+    lines.push(CSV_FIELDS.map((key) => csvEscape(row[key])).join(","));
+  }
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "catalog_all_ornaments.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function openHighlight(button) {
+  els.highlightLightboxImage.src = button.dataset.src || "";
+  els.highlightLightboxImage.alt = button.dataset.alt || "";
+  els.highlightLightboxCaption.textContent = button.dataset.caption || "";
+  els.highlightLightbox.classList.remove("hidden");
+  els.highlightLightbox.classList.add("flex");
+  els.highlightLightbox.setAttribute("aria-hidden", "false");
+}
+
+function closeHighlight() {
+  els.highlightLightbox.classList.add("hidden");
+  els.highlightLightbox.classList.remove("flex");
+  els.highlightLightbox.setAttribute("aria-hidden", "true");
+  els.highlightLightboxImage.src = "";
+}
+
+function bindHighlights() {
+  for (const button of document.querySelectorAll("[data-highlight]")) {
+    button.addEventListener("click", () => openHighlight(button));
+  }
+  if (els.closeHighlightBtn) els.closeHighlightBtn.addEventListener("click", closeHighlight);
+  if (els.highlightLightbox) {
+    els.highlightLightbox.addEventListener("click", (event) => {
+      if (event.target === els.highlightLightbox) closeHighlight();
+    });
+  }
 }
 
 async function init() {
@@ -196,25 +262,38 @@ async function init() {
     els.collectionCount.textContent = `${state.ornaments.length} total ornaments`;
   }
   buildSeriesOptions(state.ornaments);
-  renderFeatured(state.ornaments);
   applyFilters();
+  syncModalToHash();
 
-  if (els.searchInput) els.searchInput.addEventListener("input", applyFilters);
-  if (els.seriesFilter) els.seriesFilter.addEventListener("change", applyFilters);
-  if (els.closeModalBtn) els.closeModalBtn.addEventListener("click", closeModal);
-  if (els.detailModal) {
-    els.detailModal.addEventListener("click", (e) => {
-      if (e.target === els.detailModal) closeModal();
-    });
+  if (els.downloadCatalogBtn) {
+    els.downloadCatalogBtn.disabled = false;
+    els.downloadCatalogBtn.addEventListener("click", downloadCatalog);
   }
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeModal();
+}
+
+bindHighlights();
+window.addEventListener("hashchange", syncModalToHash);
+window.addEventListener("popstate", syncModalToHash);
+
+if (els.searchInput) els.searchInput.addEventListener("input", applyFilters);
+if (els.seriesFilter) els.seriesFilter.addEventListener("change", applyFilters);
+if (els.closeModalBtn) els.closeModalBtn.addEventListener("click", () => closeModal());
+if (els.detailModal) {
+  els.detailModal.addEventListener("click", (e) => {
+    if (e.target === els.detailModal) closeModal();
   });
 }
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (els.highlightLightbox && !els.highlightLightbox.classList.contains("hidden")) {
+    closeHighlight();
+    return;
+  }
+  closeModal();
+});
 
 init().catch((err) => {
   console.error(err);
   els.galleryGrid.innerHTML =
     '<p class="text-red-600">Failed to load data.json. Run build_data.py first.</p>';
 });
-
